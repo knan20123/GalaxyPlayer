@@ -1,0 +1,249 @@
+import telebot
+import requests
+from bs4 import BeautifulSoup
+import time
+import os
+import threading
+import logging
+from datetime import datetime
+from flask import Flask
+
+# ─────────────────────────────────────────────
+# إعداد السجل
+# ─────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────
+# متغيرات البيئة (يجب ضبطها في Render)
+# ─────────────────────────────────────────────
+TOKEN   = os.environ.get('8977849022: AAHwThIrcSeYsvZsemu215sFnb7p898Mow')
+CHAT_ID = os.environ.get('1718292210')
+
+if not TOKEN or not CHAT_ID:
+    raise ValueError("يجب تعيين API_TOKEN و CHAT_ID كمتغيرات بيئة")
+
+bot = telebot.TeleBot(TOKEN)
+
+# ─────────────────────────────────────────────
+# Flask keep-alive (يمنع Render من إيقاف السيرفر)
+# ─────────────────────────────────────────────
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "✅ البوت يعمل!"
+
+def run_flask():
+    port = int(os.environ.get('PORT', 8080))
+    app.run(host='0.0.0.0', port=port)
+
+# ─────────────────────────────────────────────
+# تتبع الأحداث المُرسلة (لتجنب التكرار)
+# ─────────────────────────────────────────────
+sent_events: set = set()
+
+# ─────────────────────────────────────────────
+# دالة جلب أخبار الفوركس
+# ─────────────────────────────────────────────
+def fetch_forex_news():
+    """جلب الأحداث الاقتصادية من investing.com (بديل أكثر استقراراً)."""
+    url = "https://www.investing.com/economic-calendar/"
+    headers = {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/120.0.0.0 Safari/537.36'
+        ),
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://www.google.com/',
+    }
+
+    response = requests.get(url, headers=headers, timeout=15)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, 'html.parser')
+    rows = soup.select('tr.js-event-item')
+
+    events = []
+    for row in rows:
+        try:
+            # استخراج مستوى التأثير
+            impact_el = row.select_one('td.sentiment')
+            bull_icons = impact_el.select('i.grayFullBullishIcon') if impact_el else []
+            impact_level = len(bull_icons)  # 1=منخفض، 2=متوسط، 3=عالي
+
+            # فلتر: الأحداث عالية التأثير فقط (3 ثيران)
+            if impact_level < 3:
+                continue
+
+            time_el     = row.select_one('td.time')
+            currency_el = row.select_one('td.flagCur')
+            event_el    = row.select_one('td.event')
+            actual_el   = row.select_one('td.act')
+            forecast_el = row.select_one('td.fore')
+            previous_el = row.select_one('td.prev')
+
+            if not (time_el and currency_el and event_el):
+                continue
+
+            event_time     = time_el.text.strip()
+            event_currency = currency_el.text.strip()
+            event_name     = event_el.text.strip()
+            actual         = actual_el.text.strip()   if actual_el   else "—"
+            forecast       = forecast_el.text.strip() if forecast_el else "—"
+            previous       = previous_el.text.strip() if previous_el else "—"
+
+            # معرّف فريد لكل حدث لتجنب التكرار
+            event_id = f"{event_time}_{event_currency}_{event_name}"
+
+            events.append({
+                'id':       event_id,
+                'time':     event_time,
+                'currency': event_currency,
+                'event':    event_name,
+                'actual':   actual,
+                'forecast': forecast,
+                'previous': previous,
+            })
+
+        except Exception as e:
+            logger.warning(f"خطأ في تحليل صف: {e}")
+            continue
+
+    return events
+
+
+# ─────────────────────────────────────────────
+# بناء رسالة التيليغرام
+# ─────────────────────────────────────────────
+def build_message(events: list) -> str:
+    now = datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
+    lines = [f"📊 *أحداث اقتصادية عالية التأثير 🔴*\n🕐 _{now}_\n"]
+
+    for e in events:
+        lines.append(
+            f"⏰ *{e['time']}*  |  🏳️ {e['currency']}\n"
+            f"📌 {e['event']}\n"
+            f"✅ الفعلي: `{e['actual']}`  |  🎯 التوقع: `{e['forecast']}`  |  📉 السابق: `{e['previous']}`\n"
+        )
+
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# التحقق من أوقات التداول (تجنب عطلة نهاية الأسبوع)
+# ─────────────────────────────────────────────
+def is_market_hours() -> bool:
+    now = datetime.utcnow()
+    # السوق مغلق السبت والأحد
+    if now.weekday() in (5, 6):
+        return False
+    # تداول فقط بين 00:00 - 22:00 UTC
+    if now.hour >= 22:
+        return False
+    return True
+
+
+# ─────────────────────────────────────────────
+# حلقة الفحص الرئيسية
+# ─────────────────────────────────────────────
+def check_news():
+    global sent_events
+    logger.info("بدأ الفحص الدوري للأخبار...")
+
+    while True:
+        try:
+            if not is_market_hours():
+                logger.info("السوق مغلق — تم تخطي الفحص")
+                time.sleep(1800)  # انتظر 30 دقيقة قبل الفحص مجدداً
+                continue
+
+            events = fetch_forex_news()
+
+            # فلتر الأحداث الجديدة فقط
+            new_events = [e for e in events if e['id'] not in sent_events]
+
+            if new_events:
+                message = build_message(new_events)
+                bot.send_message(CHAT_ID, message, parse_mode="Markdown")
+                logger.info(f"تم إرسال {len(new_events)} حدث جديد")
+
+                # حفظ الأحداث المُرسلة
+                for e in new_events:
+                    sent_events.add(e['id'])
+
+                # إبقاء الذاكرة خفيفة (أقصى 200 حدث محفوظ)
+                if len(sent_events) > 200:
+                    sent_events = set(list(sent_events)[-100:])
+            else:
+                logger.info("لا توجد أحداث جديدة")
+
+        except requests.RequestException as e:
+            logger.error(f"خطأ في الشبكة: {e}")
+        except telebot.apihelper.ApiException as e:
+            logger.error(f"خطأ في Telegram API: {e}")
+        except Exception as e:
+            logger.exception(f"خطأ غير متوقع: {e}")
+
+        time.sleep(600)  # انتظر 10 دقائق
+
+
+# ─────────────────────────────────────────────
+# أوامر البوت
+# ─────────────────────────────────────────────
+@bot.message_handler(commands=['start'])
+def handle_start(message):
+    bot.reply_to(
+        message,
+        "✅ *البوت يعمل!*\n\n"
+        "سيتم إرسال الأحداث الاقتصادية عالية التأثير تلقائياً.\n\n"
+        "الأوامر المتاحة:\n"
+        "/news — جلب الأخبار الآن\n"
+        "/status — حالة البوت",
+        parse_mode="Markdown"
+    )
+
+@bot.message_handler(commands=['news'])
+def handle_news(message):
+    bot.reply_to(message, "⏳ جاري جلب الأخبار...")
+    try:
+        events = fetch_forex_news()
+        if events:
+            bot.reply_to(message, build_message(events), parse_mode="Markdown")
+        else:
+            bot.reply_to(message, "⚠️ لا توجد أحداث عالية التأثير حالياً.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ خطأ: {e}")
+
+@bot.message_handler(commands=['status'])
+def handle_status(message):
+    market = "✅ مفتوح" if is_market_hours() else "🔴 مغلق"
+    bot.reply_to(
+        message,
+        f"📡 *حالة البوت*\n\n"
+        f"السوق: {market}\n"
+        f"الأحداث المحفوظة: {len(sent_events)}\n"
+        f"الوقت (UTC): {datetime.utcnow().strftime('%H:%M:%S')}",
+        parse_mode="Markdown"
+    )
+
+
+# ─────────────────────────────────────────────
+# نقطة الدخول
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    logger.info("البوت بدأ العمل...")
+
+    # Flask للـ keep-alive
+    threading.Thread(target=run_flask, daemon=True).start()
+
+    # حلقة فحص الأخبار
+    threading.Thread(target=check_news, daemon=True).start()
+
+    # تشغيل البوت
+    bot.infinity_polling(logger_level=logging.WARNING)
+
