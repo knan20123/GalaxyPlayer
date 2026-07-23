@@ -1,14 +1,34 @@
 {
   "expo": {
+    "name": "galaxyplayer",
+    "slug": "galaxyplayer",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "com.knan20123.GalaxyPlayer"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
     "extra": {
       "eas": {
-        " projectId": "7921dce9-3c48-46bc-9208-967ed692f787",
         "projectId": "7921dce9-3c48-46bc-9208-967ed692f787"
       }
     },
-    "owner": "knan20123",
-    "android": {
-      "package": "com.knan20123.GalaxyPlayer"
-    }
+    "owner": "knan20123"
   }
 }
