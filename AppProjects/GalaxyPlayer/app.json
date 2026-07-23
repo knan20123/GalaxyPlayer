@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "extra": {
+      "eas": {
+       " projectId": "7921dce9-3c48-46bc-9208-967ed692f787"
+      }
+    },
+    "owner": "knan20123",
+    "android": {
+      "package": "com.knan20123.GalaxyPlayer"
+    }
+  }
+}
