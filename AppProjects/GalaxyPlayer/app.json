@@ -2,7 +2,8 @@
   "expo": {
     "extra": {
       "eas": {
-       " projectId": "7921dce9-3c48-46bc-9208-967ed692f787"
+        " projectId": "7921dce9-3c48-46bc-9208-967ed692f787",
+        "projectId": "7921dce9-3c48-46bc-9208-967ed692f787"
       }
     },
     "owner": "knan20123",
